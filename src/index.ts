@@ -12,6 +12,9 @@ import { Markup } from "telegraf";
 import * as authService from "./services/auth.service";
 import * as walletService from "./services/wallet.service";
 import { setAuthToken } from "./utils/api";
+import * as http from "http";
+import * as fs from "fs";
+import * as path from "path";
 
 // Create bot instance
 const bot = new Telegraf<BotContext>(config.botToken);
@@ -280,16 +283,138 @@ bot.action("login", async (ctx) => {
   await authHandler.loginHandler(ctx);
 });
 
-// Start bot
-bot
-  .launch()
-  .then(() => {
-    console.log("Bot started successfully!");
-  })
-  .catch((err) => {
-    console.error("Error starting bot:", err);
-  });
+// Create a simple HTTP server for Render
+const PORT = process.env.PORT || 3000;
+const server = http.createServer((req, res) => {
+  if (req.url === "/health") {
+    // Health check endpoint
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        status: "ok",
+        message: "Copperx Telegram Bot is running",
+      })
+    );
+  } else {
+    // Default response
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(`
+      <html>
+        <head>
+          <title>Copperx Telegram Bot</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              max-width: 800px;
+              margin: 0 auto;
+              padding: 20px;
+              line-height: 1.6;
+            }
+            h1 {
+              color: #2c3e50;
+            }
+            .container {
+              border: 1px solid #ddd;
+              border-radius: 5px;
+              padding: 20px;
+              margin-top: 20px;
+            }
+            .status {
+              color: #27ae60;
+              font-weight: bold;
+            }
+            a {
+              color: #3498db;
+              text-decoration: none;
+            }
+            a:hover {
+              text-decoration: underline;
+            }
+          </style>
+        </head>
+        <body>
+          <h1>Copperx Telegram Bot</h1>
+          <div class="container">
+            <p><span class="status">✅ Bot is running</span></p>
+            <p>This is the web server for the Copperx Telegram Bot.</p>
+            <p>To use the bot, search for it on Telegram and start a conversation.</p>
+            <p><a href="https://t.me/copperxcommunity/2183" target="_blank">Join our community</a></p>
+          </div>
+        </body>
+      </html>
+    `);
+  }
+});
+
+// Start both the HTTP server and the bot
+server.listen(PORT, () => {
+  console.log(`HTTP server running on port ${PORT}`);
+
+  // Create a flag file to indicate the bot is running
+  const lockFile = path.join(__dirname, "bot.lock");
+
+  try {
+    // Check if another instance is running
+    if (fs.existsSync(lockFile)) {
+      const lockData = fs.readFileSync(lockFile, "utf8");
+      const lockTime = new Date(lockData);
+      const now = new Date();
+
+      // If the lock is older than 5 minutes, it might be stale
+      if (now.getTime() - lockTime.getTime() < 5 * 60 * 1000) {
+        console.log(
+          "Another bot instance appears to be running. This instance will only serve HTTP requests."
+        );
+        return;
+      } else {
+        console.log("Found a stale lock file. Overwriting it.");
+      }
+    }
+
+    // Create or update the lock file
+    fs.writeFileSync(lockFile, new Date().toISOString());
+
+    // Start bot
+    bot
+      .launch()
+      .then(() => {
+        console.log("Bot started successfully!");
+      })
+      .catch((err) => {
+        console.error("Error starting bot:", err);
+        // Remove lock file on error
+        if (fs.existsSync(lockFile)) {
+          fs.unlinkSync(lockFile);
+        }
+      });
+
+    // Remove lock file on exit
+    const removeLock = () => {
+      if (fs.existsSync(lockFile)) {
+        fs.unlinkSync(lockFile);
+        console.log("Lock file removed.");
+      }
+    };
+
+    process.on("exit", removeLock);
+    process.on("SIGINT", removeLock);
+    process.on("SIGTERM", removeLock);
+  } catch (error) {
+    console.error("Error managing bot lock file:", error);
+    // Start bot anyway as fallback
+    bot
+      .launch()
+      .then(() => console.log("Bot started successfully!"))
+      .catch((err) => console.error("Error starting bot:", err));
+  }
+});
 
 // Enable graceful stop
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
+const shutdown = (signal: string) => {
+  console.log(`Received ${signal}. Shutting down gracefully...`);
+  bot.stop(signal);
+  server.close();
+};
+
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));
