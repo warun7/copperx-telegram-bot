@@ -1,0 +1,295 @@
+import { Telegraf, Context } from "telegraf";
+import { message } from "telegraf/filters";
+import { config } from "./config";
+import { BotContext } from "./types";
+import { sessionMiddleware } from "./middleware/session.middleware";
+import { authMiddleware } from "./middleware/auth.middleware";
+import * as authHandler from "./handlers/auth.handler";
+import * as walletHandler from "./handlers/wallet.handler";
+import * as transferHandler from "./handlers/transfer.handler";
+import { initializeUserPusher } from "./handlers/notification.handler";
+import { Markup } from "telegraf";
+import * as authService from "./services/auth.service";
+import * as walletService from "./services/wallet.service";
+import { setAuthToken } from "./utils/api";
+
+// Create bot instance
+const bot = new Telegraf<BotContext>(config.botToken);
+
+// Register middleware
+bot.use(sessionMiddleware);
+bot.use(authMiddleware);
+
+// Register command handlers
+bot.command("start", authHandler.startHandler);
+bot.command("help", authHandler.helpHandler);
+bot.command("support", authHandler.supportHandler);
+bot.command("login", authHandler.loginHandler);
+bot.command("logout", authHandler.logoutHandler);
+bot.command("profile", authHandler.profileHandler);
+
+bot.command("balance", walletHandler.balanceHandler);
+bot.command("wallets", walletHandler.walletsHandler);
+bot.command("setdefault", walletHandler.setDefaultWalletHandler);
+
+bot.command("send", transferHandler.sendHandler);
+bot.command("withdraw", transferHandler.withdrawHandler);
+bot.command("deposit", transferHandler.depositHandler);
+bot.command("history", transferHandler.historyHandler);
+
+// Register text handlers
+bot.hears("🔑 Login", authHandler.loginHandler);
+bot.hears("ℹ️ Help", authHandler.helpHandler);
+bot.hears("📞 Support", authHandler.supportHandler);
+bot.hears("👤 Profile", authHandler.profileHandler);
+bot.hears("💰 Balance", walletHandler.balanceHandler);
+bot.hears("📜 History", transferHandler.historyHandler);
+bot.hears("💸 Send", transferHandler.sendHandler);
+bot.hears("🏦 Withdraw", transferHandler.withdrawHandler);
+bot.hears("💳 Deposit", transferHandler.depositHandler);
+
+// Handle text messages
+bot.on(message("text"), async (ctx) => {
+  // Get reply message text if it exists
+  const replyMessage = ctx.message.reply_to_message;
+  const replyText =
+    replyMessage && "text" in replyMessage ? replyMessage.text : "";
+
+  // Check if we're awaiting email input for login
+  if (
+    replyText &&
+    ctx.session?.authState?.awaitingOTP === false &&
+    replyText.includes("enter your email address")
+  ) {
+    await authHandler.handleEmailInput(ctx, ctx.message.text);
+    return;
+  }
+
+  // Check if we're awaiting OTP input for login
+  if (
+    replyText &&
+    ctx.session?.authState?.awaitingOTP === true &&
+    replyText.includes("enter the OTP")
+  ) {
+    await authHandler.handleOTPInput(ctx, ctx.message.text);
+    return;
+  }
+
+  // Check if we're awaiting email input for transfer
+  if (
+    replyText &&
+    ctx.session?.transferState?.type === "EMAIL" &&
+    replyText.includes("recipient's email address")
+  ) {
+    await transferHandler.handleEmailInput(ctx, ctx.message.text);
+    return;
+  }
+
+  // Check if we're awaiting wallet address input for transfer
+  if (
+    replyText &&
+    ctx.session?.transferState?.type === "WALLET" &&
+    replyText.includes("recipient wallet address")
+  ) {
+    await transferHandler.handleWalletAddressInput(ctx, ctx.message.text);
+    return;
+  }
+
+  // Check if we're awaiting amount input for transfer
+  if (replyText && ctx.session?.transferState && replyText.includes("amount")) {
+    await transferHandler.handleAmountInput(ctx, ctx.message.text);
+    return;
+  }
+});
+
+// Handle callback queries
+bot.action(/setdefault:(.+)/, async (ctx) => {
+  const walletId = ctx.match[1];
+  await walletHandler.handleSetDefaultWallet(ctx, walletId);
+});
+
+// Add handlers for login callbacks
+bot.action("login:new_otp", async (ctx) => {
+  // Get email from session
+  const email = ctx.session?.authState?.email;
+
+  if (!email) {
+    await ctx.editMessageText(
+      "❌ Session expired. Please start the login process again."
+    );
+    return;
+  }
+
+  try {
+    // Request new OTP
+    const response = await authService.requestEmailOTP(email);
+
+    // Update session state
+    if (ctx.session && ctx.session.authState) {
+      ctx.session.authState.awaitingOTP = true;
+      ctx.session.authState.sid = response.sid; // Store the new session ID
+    }
+
+    await ctx.editMessageText(
+      "✅ A new OTP has been sent to your email address.\n\n" +
+        "Please enter the OTP to complete the login process:"
+    );
+  } catch (error) {
+    console.error("Error requesting OTP:", error);
+    await ctx.editMessageText("❌ Failed to send OTP. Please try again later.");
+  }
+});
+
+bot.action("login:cancel", async (ctx) => {
+  // Reset auth state
+  if (ctx.session) {
+    ctx.session.authState = {
+      email: undefined,
+      awaitingOTP: false,
+    };
+  }
+
+  // First edit the message
+  await ctx.editMessageText(
+    "❌ Login cancelled. You can try again by clicking the Login button."
+  );
+
+  // Then send a new message with keyboard
+  await ctx.reply(
+    "Use the buttons below to navigate:",
+    Markup.keyboard([["🔑 Login"], ["ℹ️ Help", "📞 Support"]]).resize()
+  );
+});
+
+bot.action("transfer:confirm", async (ctx) => {
+  await transferHandler.handleTransferConfirm(ctx);
+});
+
+bot.action("transfer:cancel", async (ctx) => {
+  await transferHandler.handleTransferCancel(ctx);
+});
+
+bot.action("withdraw:wallet", async (ctx) => {
+  await transferHandler.handleWalletWithdraw(ctx);
+});
+
+bot.action("withdraw:bank", async (ctx) => {
+  await transferHandler.handleBankWithdraw(ctx);
+});
+
+bot.action(/network:(.+)/, async (ctx) => {
+  const network = ctx.match[1];
+  await transferHandler.handleNetworkSelection(ctx, network);
+});
+
+// Initialize Pusher for authenticated users
+bot.on("message", async (ctx) => {
+  // Check if user is authenticated and has organization ID
+  if (ctx.session?.user?.token && ctx.session.user.organizationId) {
+    // Initialize Pusher for this user
+    initializeUserPusher(
+      bot,
+      ctx.chat.id,
+      ctx.session.user.token,
+      ctx.session.user.organizationId
+    );
+  }
+});
+
+// Add handlers for wallet generation
+bot.action(/generate:(.+)/, async (ctx) => {
+  const network = ctx.match[1];
+
+  if (!ctx.session?.user) {
+    await ctx.editMessageText(
+      "❌ You need to login first to generate a wallet."
+    );
+    return;
+  }
+
+  try {
+    // Set auth token
+    setAuthToken(ctx.session.user.token);
+
+    // Generate wallet
+    const response = await walletService.generateWallet(network);
+    const wallet = response.data;
+
+    // Set as default if it's the first wallet
+    try {
+      const defaultWalletResponse = await walletService.getDefaultWallet();
+      if (!defaultWalletResponse.data) {
+        await walletService.setDefaultWallet(wallet.id);
+      }
+    } catch (error) {
+      console.error("Error setting default wallet:", error);
+    }
+
+    const networkName =
+      network === "137"
+        ? "Polygon"
+        : network === "42161"
+        ? "Arbitrum"
+        : network === "8453"
+        ? "Base"
+        : network === "23434"
+        ? "Blast"
+        : network;
+
+    await ctx.editMessageText(
+      `✅ ${networkName} wallet generated successfully!\n\n` +
+        `Address: ${wallet.walletAddress}\n\n` +
+        `Use /wallets to view all your wallets.`
+    );
+  } catch (error) {
+    console.error("Error generating wallet:", error);
+    await ctx.editMessageText(
+      "❌ Failed to generate wallet. Please try again later."
+    );
+  }
+});
+
+// Add handlers for deposit
+bot.action(/deposit:(.+)/, async (ctx) => {
+  const network = ctx.match[1];
+  await transferHandler.handleDepositNetworkSelection(ctx, network);
+});
+
+// Add handler for copy address
+bot.action(/copy:(.+)/, async (ctx) => {
+  const index = ctx.match[1];
+  await walletHandler.handleCopyAddress(ctx, index);
+});
+
+// Add handler for refresh deposit status
+bot.action(/refresh:deposit:(.+)/, async (ctx) => {
+  const network = ctx.match[1];
+  await transferHandler.handleDepositNetworkSelection(ctx, network);
+  await ctx.answerCbQuery("Deposit information refreshed");
+});
+
+// Register history pagination handlers
+bot.action(/history:(prev|next|refresh)/, async (ctx) => {
+  const action = ctx.match[1];
+  await transferHandler.handleHistoryPagination(ctx, action);
+});
+
+// Add handler for login button in welcome message
+bot.action("login", async (ctx) => {
+  await ctx.answerCbQuery("Starting login process...");
+  await authHandler.loginHandler(ctx);
+});
+
+// Start bot
+bot
+  .launch()
+  .then(() => {
+    console.log("Bot started successfully!");
+  })
+  .catch((err) => {
+    console.error("Error starting bot:", err);
+  });
+
+// Enable graceful stop
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
