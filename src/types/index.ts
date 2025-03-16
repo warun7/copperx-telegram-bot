@@ -84,6 +84,11 @@ export interface BotContext extends Context<Update> {
       limit: number;
     };
     walletAddresses?: string[];
+    depositState?: {
+      network?: string;
+      chainId?: number | string;
+      amount?: string;
+    };
   };
 }
 

@@ -38,8 +38,15 @@ const canPerformTransfers = async (ctx: BotContext): Promise<boolean> => {
     // Set auth token
     setAuthToken(ctx.session.user.token);
 
-    // Check KYC status using the global function
-    const kycApproved = await authService.isKycApproved();
+    // Check KYC status
+    const kycResponse = await authService.getKYCStatus();
+    const kycs = kycResponse.data;
+
+    let kycApproved = false;
+    if (kycs && kycs.data && kycs.data.length > 0) {
+      const latestKyc = kycs.data[0];
+      kycApproved = latestKyc.status === "APPROVED";
+    }
 
     if (!kycApproved) {
       await ctx.reply(
@@ -205,9 +212,7 @@ const fetchAndDisplayHistory = async (ctx: BotContext) => {
 
     // Previous page button
     if (page > 1) {
-      paginationButtons.push(
-        Markup.button.callback("◀️ Previous", "history:prev")
-      );
+      paginationButtons.push(Markup.button.callback("◀️ Previous", "history:prev"));
     }
 
     // Next page button
@@ -216,22 +221,15 @@ const fetchAndDisplayHistory = async (ctx: BotContext) => {
     }
 
     // Add refresh button
-    paginationButtons.push(
-      Markup.button.callback("🔄 Refresh", "history:refresh")
-    );
-
-    // Combine all buttons
-    const allButtons = [...buttons];
-    if (paginationButtons.length > 0) {
-      allButtons.push(paginationButtons);
-    }
+    paginationButtons.push(Markup.button.callback("🔄 Refresh", "history:refresh"));
 
     // Send message with pagination buttons
     await ctx.reply(message, {
       parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: allButtons,
-      },
+      ...Markup.inlineKeyboard([
+        ...buttons,
+        ...paginationButtons,
+      ]),
     });
   } catch (error) {
     console.error("Error fetching transaction history:", error);
@@ -293,76 +291,27 @@ export const handleHistoryPagination = async (
  * Send command handler
  */
 export const sendHandler = async (ctx: BotContext) => {
-  if (!(await checkAuth(ctx))) return;
-
-  try {
-    // Check KYC status
-    const kycApproved = await authService.isKycApproved();
-
-    if (!kycApproved) {
-      await ctx.reply(
-        "❌ Your KYC is not approved. You cannot perform transfers until your KYC is approved.\n\n" +
-          "Please complete your KYC on the Copperx platform.",
-        Markup.keyboard([
-          ["💰 Balance", "📜 History"],
-          ["👤 Profile", "ℹ️ Help"],
-        ]).resize()
-      );
-      return;
-    }
-
-    // Check if user has a default wallet
-    const walletResponse = await walletService.getDefaultWallet();
-    if (!walletResponse.data || !walletResponse.data.walletAddress) {
-      await ctx.reply(
-        "❌ You don't have a default wallet set up. Please set up a wallet first.",
-        Markup.keyboard([
-          ["💰 Balance", "📜 History"],
-          ["👤 Profile", "ℹ️ Help"],
-        ]).resize()
-      );
-      return;
-    }
-
-    // Check wallet balance
-    const balanceResponse = await walletService.getWalletBalance();
-    if (
-      !balanceResponse.data ||
-      !balanceResponse.data.balance ||
-      parseFloat(balanceResponse.data.balance) <= 0
-    ) {
-      await ctx.reply(
-        "❌ Your wallet doesn't have sufficient balance to perform transfers.",
-        Markup.keyboard([
-          ["💰 Balance", "📜 History"],
-          ["👤 Profile", "ℹ️ Help"],
-        ]).resize()
-      );
-      return;
-    }
-
-    // Initialize session if not exists
-    if (!ctx.session) {
-      ctx.session = {};
-    }
-
-    // Set transfer state
-    ctx.session.transferState = {
-      type: "EMAIL",
-      recipient: undefined,
-      amount: undefined,
-    };
-
-    await ctx.reply(
-      "Please enter the recipient's email address:",
-      Markup.forceReply().placeholder("Enter recipient email")
-    );
-  } catch (error) {
-    console.error("Error checking transfer eligibility:", error);
-    await ctx.reply(
-      "❌ Failed to verify transfer eligibility. Please try again later."
-    );
+  // Check if user can perform transfers
+  if (!(await canPerformTransfers(ctx))) {
+    return;
   }
+
+  // Initialize session if not exists
+  if (!ctx.session) {
+    ctx.session = {};
+  }
+
+  // Set transfer state
+  ctx.session.transferState = {
+    type: "EMAIL",
+    recipient: undefined,
+    amount: undefined,
+  };
+
+  await ctx.reply(
+    "Please enter the recipient's email address:",
+    Markup.forceReply().placeholder("Enter recipient email")
+  );
 };
 
 /**
@@ -462,14 +411,12 @@ export const handleAmountInput = async (ctx: BotContext, amount: string) => {
 
     await ctx.reply(confirmMessage, {
       parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: "✅ Confirm", callback_data: "transfer:confirm" },
-            { text: "❌ Cancel", callback_data: "transfer:cancel" },
-          ],
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("✅ Confirm", "transfer:confirm"),
+          Markup.button.callback("❌ Cancel", "transfer:cancel"),
         ],
-      },
+      ]),
     });
   } catch (error) {
     console.error("Error getting fee information:", error);
@@ -490,14 +437,12 @@ export const handleAmountInput = async (ctx: BotContext, amount: string) => {
 
     await ctx.reply(confirmMessage, {
       parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: "✅ Confirm", callback_data: "transfer:confirm" },
-            { text: "❌ Cancel", callback_data: "transfer:cancel" },
-          ],
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("✅ Confirm", "transfer:confirm"),
+          Markup.button.callback("❌ Cancel", "transfer:cancel"),
         ],
-      },
+      ]),
     });
   }
 };
@@ -602,67 +547,18 @@ export const handleTransferCancel = async (ctx: BotContext) => {
  * Withdraw command handler
  */
 export const withdrawHandler = async (ctx: BotContext) => {
-  if (!(await checkAuth(ctx))) return;
-
-  try {
-    // Check KYC status
-    const kycApproved = await authService.isKycApproved();
-
-    if (!kycApproved) {
-      await ctx.reply(
-        "❌ Your KYC is not approved. You cannot perform withdrawals until your KYC is approved.\n\n" +
-          "Please complete your KYC on the Copperx platform.",
-        Markup.keyboard([
-          ["💰 Balance", "📜 History"],
-          ["👤 Profile", "ℹ️ Help"],
-        ]).resize()
-      );
-      return;
-    }
-
-    // Check if user has a default wallet
-    const walletResponse = await walletService.getDefaultWallet();
-    if (!walletResponse.data || !walletResponse.data.walletAddress) {
-      await ctx.reply(
-        "❌ You don't have a default wallet set up. Please set up a wallet first.",
-        Markup.keyboard([
-          ["💰 Balance", "📜 History"],
-          ["👤 Profile", "ℹ️ Help"],
-        ]).resize()
-      );
-      return;
-    }
-
-    // Check wallet balance
-    const balanceResponse = await walletService.getWalletBalance();
-    if (
-      !balanceResponse.data ||
-      !balanceResponse.data.balance ||
-      parseFloat(balanceResponse.data.balance) <= 0
-    ) {
-      await ctx.reply(
-        "❌ Your wallet doesn't have sufficient balance to perform withdrawals.",
-        Markup.keyboard([
-          ["💰 Balance", "📜 History"],
-          ["👤 Profile", "ℹ️ Help"],
-        ]).resize()
-      );
-      return;
-    }
-
-    await ctx.reply(
-      "Select withdrawal method:",
-      Markup.inlineKeyboard([
-        Markup.button.callback("To External Wallet", "withdraw:wallet"),
-        Markup.button.callback("To Bank Account", "withdraw:bank"),
-      ])
-    );
-  } catch (error) {
-    console.error("Error checking withdrawal eligibility:", error);
-    await ctx.reply(
-      "❌ Failed to verify withdrawal eligibility. Please try again later."
-    );
+  // Check if user can perform transfers
+  if (!(await canPerformTransfers(ctx))) {
+    return;
   }
+
+  await ctx.reply(
+    "Select withdrawal method:",
+    Markup.inlineKeyboard([
+      Markup.button.callback("To External Wallet", "withdraw:wallet"),
+      Markup.button.callback("To Bank Account", "withdraw:bank"),
+    ])
+  );
 };
 
 /**
@@ -786,21 +682,6 @@ export const depositHandler = async (ctx: BotContext) => {
   if (!(await checkAuth(ctx))) return;
 
   try {
-    // Check KYC status
-    const kycApproved = await authService.isKycApproved();
-
-    if (!kycApproved) {
-      await ctx.reply(
-        "❌ Your KYC is not approved. You cannot perform deposits until your KYC is approved.\n\n" +
-          "Please complete your KYC on the Copperx platform.",
-        Markup.keyboard([
-          ["💰 Balance", "📜 History"],
-          ["👤 Profile", "ℹ️ Help"],
-        ]).resize()
-      );
-      return;
-    }
-
     // Get user's wallets
     const walletsResponse = await walletService.getWallets();
     const wallets = walletsResponse.data;
@@ -838,9 +719,7 @@ export const depositHandler = async (ctx: BotContext) => {
       "💰 *Deposit Funds*\n\n" + "Select the network you want to deposit to:",
       {
         parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: buttons,
-        },
+        ...Markup.inlineKeyboard(buttons),
       }
     );
   } catch (error) {
@@ -866,51 +745,7 @@ const formatNetworkName = (network: string): string => {
 };
 
 /**
- * Show deposit network selection
- */
-export const showDepositNetworkSelection = async (ctx: BotContext) => {
-  if (!(await checkAuth(ctx))) return;
-
-  try {
-    // Define supported networks with their chain IDs
-    const supportedNetworks = [
-      { name: "Polygon", chainId: "137" },
-      { name: "Arbitrum", chainId: "42161" },
-      { name: "Ethereum", chainId: "1" },
-      { name: "Base", chainId: "8453" },
-      { name: "Optimism", chainId: "10" },
-      { name: "BSC", chainId: "56" },
-      { name: "Avalanche", chainId: "43114" },
-      { name: "Blast", chainId: "23434" },
-    ];
-
-    // Create inline keyboard for network selection
-    const buttons = supportedNetworks.map((network) => [
-      Markup.button.callback(
-        `Deposit to ${network.name}`,
-        `deposit:${network.chainId}`
-      ),
-    ]);
-
-    await ctx.reply(
-      "💰 *Deposit Funds*\n\n" + "Select the network you want to deposit to:",
-      {
-        parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: buttons,
-        },
-      }
-    );
-  } catch (error) {
-    console.error("Error showing deposit network selection:", error);
-    await ctx.reply(
-      "❌ Failed to show deposit options. Please try again later."
-    );
-  }
-};
-
-/**
- * Handle deposit network selection with fallback method
+ * Handle deposit network selection
  */
 export const handleDepositNetworkSelection = async (
   ctx: BotContext,
@@ -919,93 +754,77 @@ export const handleDepositNetworkSelection = async (
   if (!(await checkAuth(ctx))) return;
 
   try {
-    // Show loading message
-    const loadingMsg = await ctx.reply("⏳ Preparing deposit information...");
+    // Get deposit information
+    const depositInfoResponse = await transferService.getDepositInfo(network);
+    const depositInfo = depositInfoResponse.data;
 
-    // Network parameter is now the chainId directly from our updated showDepositNetworkSelection
-    const chainId = network;
-    const networkName = formatNetworkName(chainId);
-
-    console.log(
-      `Setting up deposit for network: ${networkName} (chainId: ${chainId})`
-    );
-
-    // Get user's wallets
-    const walletsResponse = await walletService.getWallets();
-    const wallets = walletsResponse.data;
-
-    // Delete loading message
-    await ctx.telegram.deleteMessage(ctx.chat!.id, loadingMsg.message_id);
-
-    if (!wallets || wallets.length === 0) {
-      await ctx.reply(
-        "❌ You don't have any wallets set up yet.\n\n" +
-          "Would you like to generate a wallet?",
-        Markup.inlineKeyboard([
-          Markup.button.callback("Generate Polygon Wallet", "generate:137"),
-          Markup.button.callback("Generate Arbitrum Wallet", "generate:42161"),
-        ])
+    if (!depositInfo || !depositInfo.address) {
+      await ctx.editMessageText(
+        "❌ Failed to get deposit information for this network. Please try again later."
       );
       return;
     }
 
-    // Find wallet for the selected network
-    const wallet = wallets.find(
-      (w: any) => w.network === chainId || w.chainId === chainId
-    );
+    // Format network name
+    const networkName = formatNetworkName(network);
 
-    if (!wallet) {
-      await ctx.reply(
-        `❌ You don't have a wallet for ${networkName} network.\n\n` +
-          "Would you like to generate one?",
-        Markup.inlineKeyboard([
-          Markup.button.callback(
-            `Generate ${networkName} Wallet`,
-            `generate:${chainId}`
-          ),
-        ])
-      );
-      return;
-    }
+    // Create QR code URL for the address
+    const qrCodeUrl = `https://chart.googleapis.com/chart?cht=qr&chs=250x250&chl=${depositInfo.address}`;
 
     // Format deposit instructions
-    let message = `💰 *Deposit USDC on ${networkName}*\n\n`;
-    message += "To deposit funds, send USDC to your wallet address:\n\n";
-    message += `\`${wallet.walletAddress}\`\n\n`;
-    message += "⚠️ *Important Notes:*\n";
-    message += `• Only send USDC on the ${networkName} network\n`;
-    message += "• Minimum deposit amount: 1 USDC\n";
-    message += "• Deposits typically take 5-20 minutes to be credited\n\n";
-    message +=
-      "You will receive a notification once your deposit is credited to your account.";
+    let message = `💰 *Deposit to ${networkName}*\n\n`;
+    message += `To deposit funds to your ${networkName} wallet, send USDC to the following address:\n\n`;
+    message += `\`${depositInfo.address}\`\n\n`;
 
-    await ctx.reply(message, {
+    // Add network-specific instructions
+    message += "⚠️ *Important Notes:*\n";
+    message += `• Make sure to send only USDC on the ${networkName} network\n`;
+    message += "• Sending other tokens may result in loss of funds\n";
+    message += "• Deposits typically take 5-20 minutes to be credited\n\n`;
+
+    // Add fee information if available
+    if (depositInfo.fee) {
+      message += `*Fee:* ${depositInfo.fee} USDC\n\n`;
+    }
+
+    message += "You will receive a notification once your deposit is credited.";
+
+    // Send message with QR code
+    await ctx.editMessageText(message, {
       parse_mode: "Markdown",
       reply_markup: {
         inline_keyboard: [
           [
             {
-              text: "📜 View Transaction History",
-              callback_data: "history:refresh",
+              text: "📋 Copy Address",
+              callback_data: `copy:${depositInfo.address}`,
+            },
+          ],
+          [
+            {
+              text: "🔄 Refresh Deposit Status",
+              callback_data: `refresh:deposit:${network}`,
+            },
+          ],
+          [
+            {
+              text: "💰 Create Deposit Transaction",
+              callback_data: `create:deposit:${network}`,
             },
           ],
         ],
       },
     });
-  } catch (error: any) {
-    console.error("Error setting up deposit form:", error);
 
-    let errorMessage = "❌ Failed to set up deposit form.";
-    if (error.message) {
-      errorMessage += ` ${error.message}`;
-    }
-
-    await ctx.reply(
-      `${errorMessage}\n\nPlease try again or select a different network.`
+    // Send QR code as a separate message
+    await ctx.replyWithPhoto(qrCodeUrl, {
+      caption: `QR Code for your ${networkName} deposit address`,
+    });
+  } catch (error) {
+    console.error("Error getting deposit information:", error);
+    await ctx.editMessageText(
+      "❌ Failed to get deposit information. Please try again later."
     );
-
-    // Try to recover by showing network selection again
-    await showDepositNetworkSelection(ctx);
   }
 };
 
@@ -1018,6 +837,35 @@ const truncateAddress = (address: string): string => {
   return `${address.substring(0, 10)}...${address.substring(
     address.length - 10
   )}`;
+};
+
+/**
+ * Handle create deposit transaction
+ */
+export const handleCreateDeposit = async (ctx: BotContext, network: string) => {
+  if (!(await checkAuth(ctx))) return;
+
+  try {
+    await ctx.answerCbQuery("Starting deposit process...");
+
+    // Initialize deposit state if not exists
+    if (!ctx.session.depositState) {
+      ctx.session.depositState = {
+        network,
+        chainId: getChainIdFromNetwork(network),
+      };
+    }
+
+    await ctx.reply(
+      "Please enter the amount you want to deposit (in USDC):",
+      Markup.forceReply().placeholder("Enter amount")
+    );
+  } catch (error) {
+    console.error("Error starting deposit process:", error);
+    await ctx.answerCbQuery(
+      "Failed to start deposit process. Please try again."
+    );
+  }
 };
 
 /**
@@ -1043,65 +891,23 @@ export const handleDepositAmountInput = async (
     return;
   }
 
-  // Validate minimum amount
-  const numAmount = parseFloat(amount);
-  if (numAmount < 1) {
-    await ctx.reply(
-      "❌ Minimum deposit amount is 1 USDC. Please enter a larger amount."
-    );
-    return;
-  }
-
-  // Check if chainId exists
-  if (!ctx.session.depositState.chainId) {
-    await ctx.reply(
-      "❌ Missing chain ID. Please start the deposit process again."
-    );
-    await showDepositNetworkSelection(ctx);
-    return;
-  }
-
   try {
-    // Show loading message
-    const loadingMsg = await ctx.reply("⏳ Creating deposit transaction...");
-
-    const chainId = ctx.session.depositState.chainId.toString();
-    const networkName = formatNetworkName(chainId);
-
-    console.log(
-      `Creating deposit transaction: amount=${amount}, chainId=${chainId}`
-    );
+    const chainId = ctx.session.depositState.chainId;
 
     // Create deposit transaction
     const response = await transferService.createDeposit(amount, chainId);
-    console.log(
-      "Deposit transaction response:",
-      JSON.stringify(response.data, null, 2)
-    );
     const deposit = response.data;
-
-    // Delete loading message
-    await ctx.telegram.deleteMessage(ctx.chat!.id, loadingMsg.message_id);
 
     // Format success message
     let message = "✅ *Deposit Transaction Created*\n\n";
     message += `*Amount:* ${amount} USDC\n`;
-    message += `*Network:* ${networkName}\n`;
+    message += `*Network:* ${formatNetworkName(
+      ctx.session.depositState.network ?? "polygon"
+    )}\n`;
     message += `*Status:* ${deposit.status || "Pending"}\n\n`;
 
     if (deposit.paymentUrl) {
       message += `*Payment URL:* ${deposit.paymentUrl}\n\n`;
-    }
-
-    // Add deposit address information if available
-    if (deposit.transactions && deposit.transactions.length > 0) {
-      const transaction = deposit.transactions[0];
-      if (
-        transaction.depositAccount &&
-        transaction.depositAccount.walletAddress
-      ) {
-        message += `*Deposit Address:* \`${transaction.depositAccount.walletAddress}\`\n\n`;
-      }
     }
 
     message +=
@@ -1109,78 +915,52 @@ export const handleDepositAmountInput = async (
 
     await ctx.reply(message, {
       parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: "📜 View Transaction History",
-              callback_data: "history:refresh",
-            },
-          ],
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback(
+            "📜 View Transaction History",
+            "history:refresh"
+          ),
         ],
-      },
+      ]),
     });
 
     // Reset deposit state
     ctx.session.depositState = {};
-  } catch (error: any) {
+  } catch (error) {
     console.error("Error creating deposit transaction:", error);
-
-    // Log detailed error information
-    if (error.response?.data) {
-      console.error(
-        "API Error Response:",
-        JSON.stringify(error.response.data, null, 2)
-      );
-
-      // Log the actual constraints objects for better debugging
-      if (
-        error.response.data.message &&
-        Array.isArray(error.response.data.message)
-      ) {
-        error.response.data.message.forEach((validationError: any) => {
-          if (validationError.constraints) {
-            console.error(
-              `Constraints for ${validationError.property}:`,
-              validationError.constraints
-            );
-          }
-        });
-      }
-    }
-
-    let errorMessage = "❌ Failed to create deposit transaction.";
-
-    // Check if there's a specific error message from the API
-    if (error.message && error.message.includes("Validation error")) {
-      errorMessage = `❌ ${error.message}`;
-    } else if (error.response?.data?.message) {
-      if (Array.isArray(error.response.data.message)) {
-        // Format validation errors
-        const validationErrors = error.response.data.message
-          .map((err: any) => {
-            const field = err.property;
-            let constraints = "";
-
-            if (err.constraints) {
-              // Get the actual error messages from the constraints object
-              constraints = Object.values(err.constraints).join(", ");
-            }
-
-            return `${field}: ${constraints}`;
-          })
-          .join("; ");
-        errorMessage += ` Validation error: ${validationErrors}`;
-      } else {
-        errorMessage += ` Error: ${error.response.data.message}`;
-      }
-    }
-
-    await ctx.reply(`${errorMessage}\n\nPlease try again with a valid amount.`);
-
-    // Show deposit network selection again to restart the process
-    await showDepositNetworkSelection(ctx);
+    await ctx.reply(
+      "❌ Failed to create deposit transaction. Please try again later."
+    );
   }
+};
+
+/**
+ * Get chain ID from network name or ID
+ */
+const getChainIdFromNetwork = (network: string): number => {
+  const networkMap: { [key: string]: number } = {
+    ethereum: 1,
+    polygon: 137,
+    bsc: 56,
+    arbitrum: 42161,
+    base: 8453,
+    blast: 23434,
+  };
+
+  // If network is already a number, return it
+  if (!isNaN(Number(network))) {
+    return Number(network);
+  }
+
+  // Try to match by name (case insensitive)
+  const lowerNetwork = network.toLowerCase();
+  if (networkMap[lowerNetwork]) {
+    return networkMap[lowerNetwork];
+  }
+
+  // Default to Polygon if not found
+  return 137;
 };
 
 /**
@@ -1281,11 +1061,9 @@ export const viewTransferHandler = async (
 
     await ctx.reply(message, {
       parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "📜 Back to History", callback_data: "history:refresh" }],
-        ],
-      },
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("📜 Back to History", "history:refresh")],
+      ]),
     });
   } catch (error) {
     console.error("Error fetching transfer details:", error);
@@ -1306,29 +1084,7 @@ export const addPayeeHandler = async (ctx: BotContext) => {
       "To add a new payee, please enter their email address:",
     {
       parse_mode: "Markdown",
-      reply_markup: Markup.forceReply().reply_markup,
+      ...Markup.forceReply().placeholder("Enter payee email"),
     }
   );
-};
-
-/**
- * Handle create deposit transaction
- */
-export const handleCreateDeposit = async (ctx: BotContext, network: string) => {
-  if (!(await checkAuth(ctx))) return;
-
-  try {
-    await ctx.answerCbQuery("Starting deposit process...");
-
-    // Simply call our new handleDepositNetworkSelection function
-    await handleDepositNetworkSelection(ctx, network);
-  } catch (error) {
-    console.error("Error starting deposit process:", error);
-    await ctx.answerCbQuery(
-      "Failed to start deposit process. Please try again."
-    );
-    await ctx.reply(
-      "❌ Failed to start deposit process. Please try again later."
-    );
-  }
 };

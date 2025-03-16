@@ -20,8 +20,9 @@ const proxyPort = process.env.PROXY_PORT
 
 // Create axios instance with appropriate configuration
 const api = axios.create({
-  baseURL: config.apiBaseUrl,
+  baseURL: process.env.API_BASE_URL + "/api",
   timeout: 30000,
+  allowAbsoluteUrls: true,
   headers: {
     "Content-Type": "application/json",
   },
@@ -50,6 +51,7 @@ let tokenExpiry: number | null = null;
 // Set auth token for API calls
 export const setAuthToken = (token: string, expiresIn?: number) => {
   authToken = token;
+  api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
 
   // Set token expiry if provided
   if (expiresIn) {
@@ -59,12 +61,23 @@ export const setAuthToken = (token: string, expiresIn?: number) => {
     // Default expiry: 24 hours
     tokenExpiry = Date.now() + 24 * 60 * 60 * 1000;
   }
+
+  // Set up token refresh if expiry is provided
+  if (expiresIn) {
+    // Schedule token refresh 5 minutes before expiry
+    const refreshTimeout = (expiresIn - 300) * 1000;
+    setTimeout(async () => {
+      // Implement token refresh logic here
+      console.log("Token refresh needed");
+    }, refreshTimeout);
+  }
 };
 
 // Clear auth token
 export const clearAuthToken = () => {
   authToken = null;
   tokenExpiry = null;
+  delete api.defaults.headers.common["Authorization"];
 };
 
 // Check if token is expired

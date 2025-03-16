@@ -124,7 +124,9 @@ export const sendToEmail = async (
   return api.post("/transfers/send", {
     email,
     amount,
-    message,
+    purposeCode: "self",
+    currency: "USD",
+    note: message,
   });
 };
 
@@ -140,9 +142,10 @@ export const sendToWallet = async (
   network: string
 ) => {
   return api.post("/transfers/wallet-withdraw", {
-    address,
+    walletAddress: address,
     amount,
-    network,
+    purposeCode: "self",
+    currency: "USD",
   });
 };
 
@@ -175,9 +178,19 @@ export const sendBatch = async (
     }
   }
 
-  return api.post("/transfers/send-batch", {
-    transfers,
-  });
+  // Format the requests according to API requirements
+  const requests = transfers.map((transfer, index) => ({
+    requestId: `req_${index}`,
+    request: {
+      email: transfer.email,
+      amount: transfer.amount,
+      purposeCode: "self",
+      currency: "USD",
+      note: transfer.message,
+    },
+  }));
+
+  return api.post("/transfers/send-batch", { requests });
 };
 
 /**
@@ -185,7 +198,88 @@ export const sendBatch = async (
  * @param network - Network to deposit to
  */
 export const getDepositInfo = async (network: string) => {
+  // Based on the error "invalid input syntax for type uuid: 'deposit-info'",
+  // the API expects a direct query parameter instead of a path parameter
   return api.get(`/transfers/deposit-info?network=${network}`);
+};
+
+/**
+ * Create a deposit transaction
+ */
+export const createDeposit = async (amount: string, depositChainId: string) => {
+  try {
+    // Validate amount
+    const numAmount = parseFloat(amount);
+    if (isNaN(numAmount) || numAmount < 1) {
+      throw new Error("Validation error: Amount must be at least 1 USDC");
+    }
+
+    // Validate depositChainId
+    const validChainIds = [
+      "137",
+      "42161",
+      "10",
+      "8453",
+      "1",
+      "56",
+      "43114",
+      "23434",
+    ];
+    if (!validChainIds.includes(depositChainId)) {
+      throw new Error(
+        `Validation error: Invalid chain ID. Supported chains are: ${validChainIds.join(
+          ", "
+        )}`
+      );
+    }
+
+    console.log(
+      `Creating deposit with amount=${amount}, depositChainId=${depositChainId}`
+    );
+
+    // Add required sourceOfFunds parameter and convert depositChainId to number
+    const response = await api.post("/transfers/deposit", {
+      amount,
+      depositChainId: parseInt(depositChainId, 10),
+      sourceOfFunds: "salary", // Required parameter according to API docs
+    });
+
+    return response;
+  } catch (error: any) {
+    // If it's already a custom error we threw, just rethrow it
+    if (error.message && error.message.includes("Validation error")) {
+      throw error;
+    }
+
+    // Handle API errors
+    if (error.response) {
+      console.error(
+        "Deposit API error:",
+        error.response.status,
+        error.response.data
+      );
+
+      // Handle validation errors from API
+      if (error.response.status === 422) {
+        const messages = error.response.data.message;
+        if (Array.isArray(messages)) {
+          const errorDetails = messages.map((m: any) => m.property).join(", ");
+          throw new Error(`Validation error: Invalid ${errorDetails}`);
+        }
+      }
+    }
+
+    // Rethrow the original error
+    throw error;
+  }
+};
+
+/**
+ * Get a specific transfer by ID
+ * @param id - Transfer ID
+ */
+export const getTransfer = async (id: string) => {
+  return api.get(`/transfers/${id}`);
 };
 
 /**

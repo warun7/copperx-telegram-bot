@@ -49,10 +49,7 @@ export const startHandler = async (ctx: BotContext) => {
   // Also provide a keyboard with common commands
   await ctx.reply(
     "Use these buttons for quick access:",
-    Markup.keyboard([
-      ["🔑 Login", "ℹ️ Help", "📞 Support"],
-      ["💰 Balance", "📜 History", "👤 Profile"],
-    ]).resize()
+    Markup.keyboard([["🔑 Login"], ["ℹ️ Help", "📞 Support"]]).resize()
   );
 };
 
@@ -60,33 +57,32 @@ export const startHandler = async (ctx: BotContext) => {
  * Help command handler
  */
 export const helpHandler = async (ctx: BotContext) => {
-  // Create a help message with emoji and formatting
-  let helpMessage = `📚 *Copperx Bot Commands*\n\n`;
+  const message = `🤖 *Available Commands*
 
-  helpMessage += "🔑 *Authentication*\n";
-  helpMessage += "• /login - Connect to your Copperx account\n";
-  helpMessage += "• /logout - Disconnect your account\n";
-  helpMessage += "• /profile - View your profile information\n\n";
+*Authentication*
+• /login - Log in to your account
+• /logout - Log out from your account
+• /profile - View your profile information
+• /kycstatus - Check your KYC verification status
 
-  helpMessage += "💰 *Wallet Management*\n";
-  helpMessage += "• /balance - Check your wallet balance\n";
-  helpMessage += "• /wallets - View and manage your wallets\n";
-  helpMessage += "• /setdefault - Set your default wallet\n\n";
+*Wallet Management*
+• /balance - Check your wallet balance
+• /wallets - List your wallets
+• /setdefault - Set your default wallet
 
-  helpMessage += "💸 *Transfers*\n";
-  helpMessage += "• /send - Send USDC to an email or wallet\n";
-  helpMessage += "• /withdraw - Withdraw to external wallet\n";
-  helpMessage += "• /deposit - Get deposit instructions\n";
-  helpMessage += "• /history - View transaction history\n\n";
+*Transfers*
+• /send - Send funds to another user
+• /withdraw - Withdraw funds
+• /deposit - Get deposit information
+• /history - View transaction history
 
-  helpMessage += "ℹ️ *Support*\n";
-  helpMessage += "• /help - Show this help message\n";
-  helpMessage += "• /support - Get support information\n\n";
+*Support*
+• /help - Show this help message
+• /support - Get support information
 
-  helpMessage +=
-    "💡 *Tip*: Most commands require you to be logged in. Use /login first if you haven't already.";
+💡 *Tip:* Most commands require you to be logged in first.`;
 
-  await ctx.reply(helpMessage, { parse_mode: "Markdown" });
+  return ctx.reply(message, { parse_mode: "Markdown" });
 };
 
 /**
@@ -223,13 +219,15 @@ export const handleOTPInput = async (ctx: BotContext, otp: string) => {
       token: response.accessToken,
     };
 
-    // Send welcome message
+    // Send welcome message with custom keyboard layout
     await ctx.reply(
       `✅ Login successful!\n\nWelcome ${user.firstName || user.email}!`,
       Markup.keyboard([
-        ["💰 Balance", "📜 History"],
-        ["💸 Send", "🏦 Withdraw", "💳 Deposit"],
-        ["👤 Profile", "ℹ️ Help"],
+        ["👤 Profile", "🔑 KYC Status"],
+        ["🪙 Wallets", "💰 Balance"],
+        ["💸 Send Money", "📥 Deposit"],
+        ["⚙️ Set Default Wallet", "➕ Add Payee"],
+        ["📜 Transactions", "🔒 Logout"],
       ]).resize()
     );
 
@@ -240,7 +238,7 @@ export const handleOTPInput = async (ctx: BotContext, otp: string) => {
 
       if (kycs && kycs.data && kycs.data.length > 0) {
         const latestKyc = kycs.data[0];
-        if (latestKyc.status !== "APPROVED") {
+        if (latestKyc.status.toLowerCase() !== "approved") {
           await ctx.reply(
             "⚠️ Your KYC is not approved yet. Some features may be limited.\n\n" +
               "Please complete your KYC on the Copperx platform."
@@ -365,19 +363,76 @@ export const profileHandler = async (ctx: BotContext) => {
       kycStatus = latestKyc.status;
     }
 
-    await ctx.reply(
+    // Add a button to check detailed KYC status
+    const message =
       "👤 *Your Profile*\n\n" +
-        `*Email:* ${user.email}\n` +
-        `*Name:* ${user.firstName || "N/A"} ${user.lastName || ""}\n` +
-        `*Organization ID:* ${user.organizationId}\n` +
-        `*KYC Status:* ${kycStatus}\n\n` +
-        (kycStatus !== "APPROVED"
-          ? "⚠️ Your KYC is not approved. Some features may be limited.\n"
-          : "✅ Your KYC is approved. All features are available."),
-      { parse_mode: "Markdown" }
-    );
+      `*Email:* ${user.email}\n` +
+      `*Name:* ${user.firstName || "N/A"} ${user.lastName || ""}\n` +
+      `*Organization ID:* ${user.organizationId}\n` +
+      `*KYC Status:* ${kycStatus.toUpperCase()}\n\n` +
+      (kycStatus.toLowerCase() !== "approved"
+        ? "⚠️ Your KYC is not approved. Some features may be limited.\n"
+        : "✅ Your KYC is approved. All features are available.");
+
+    await ctx.reply(message, {
+      parse_mode: "Markdown",
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback("🔎 View KYC Details", "kyc_details")],
+      ]),
+    });
   } catch (error) {
     console.error("Error fetching profile:", error);
     await ctx.reply("❌ Failed to fetch profile. Please try again later.");
+  }
+};
+
+export const kycStatusHandler = async (ctx: BotContext) => {
+  try {
+    const response = await authService.getKYCStatus();
+    const kycData = response.data.data[0];
+
+    if (!kycData) {
+      return ctx.reply(
+        "❌ No KYC information found. Please complete your KYC first."
+      );
+    }
+
+    const status = kycData.status;
+    const kycDetail = kycData.kycDetail;
+    const statusUpdates = kycData.statusUpdates;
+
+    let message = "🔎 <b>KYC Status Information</b>\n\n";
+    message += `<b>Status:</b> ${status.toUpperCase()}\n`;
+
+    if (kycDetail) {
+      message += `\n👤 <b>Personal Details</b>\n`;
+      message += `<b>Name:</b> ${kycDetail.firstName || ""} ${
+        kycDetail.lastName || ""
+      }\n`;
+      message += `<b>Email:</b> ${kycDetail.email || ""}\n`;
+      message += `<b>Phone:</b> ${kycDetail.phoneNumber || ""}\n`;
+      message += `<b>Country:</b> ${(kycDetail.country || "").toUpperCase()}\n`;
+    }
+
+    if (statusUpdates) {
+      message += `\n📅 <b>Status Timeline</b>\n`;
+      Object.entries(statusUpdates).forEach(([key, value]) => {
+        try {
+          const date = new Date(value as string).toLocaleString();
+          message += `<b>${
+            key.charAt(0).toUpperCase() + key.slice(1)
+          }:</b> ${date}\n`;
+        } catch (e) {
+          message += `<b>${
+            key.charAt(0).toUpperCase() + key.slice(1)
+          }:</b> Unknown date\n`;
+        }
+      });
+    }
+
+    return ctx.reply(message, { parse_mode: "HTML" });
+  } catch (error) {
+    console.error("Error in kycStatusHandler:", error);
+    return ctx.reply("❌ Error fetching KYC status. Please try again later.");
   }
 };

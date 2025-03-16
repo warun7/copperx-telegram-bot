@@ -93,5 +93,38 @@ export const getUserProfile = async () => {
 };
 
 export const getKYCStatus = async () => {
-  return api.get("/kycs");
+  try {
+    console.log("Fetching KYC status...");
+    const response = await api.get("/kycs");
+    console.log("KYC Response:", JSON.stringify(response.data, null, 2));
+    return response;
+  } catch (error) {
+    console.error("Error fetching KYC status:", error);
+    throw error;
+  }
+};
+
+/**
+ * Check if user's KYC is approved
+ * @returns Boolean indicating if KYC is approved
+ */
+export const isKycApproved = async (): Promise<boolean> => {
+  try {
+    console.log("Checking if KYC is approved...");
+    const response = await getKYCStatus();
+    const kycs = response.data;
+
+    if (kycs && kycs.data && kycs.data.length > 0) {
+      const latestKyc = kycs.data[0];
+      const isApproved = latestKyc.status.toLowerCase() === "approved";
+      console.log(`KYC status: ${latestKyc.status}, isApproved: ${isApproved}`);
+      return isApproved;
+    }
+
+    console.log("No KYC data found");
+    return false;
+  } catch (error) {
+    console.error("Error checking KYC approval status:", error);
+    return false;
+  }
 };

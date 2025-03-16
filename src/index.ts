@@ -15,6 +15,7 @@ import { setAuthToken } from "./utils/api";
 import * as http from "http";
 import * as fs from "fs";
 import * as path from "path";
+import { helpHandler } from "./handlers/auth.handler";
 
 // Create bot instance
 const bot = new Telegraf<BotContext>(config.botToken);
@@ -30,6 +31,7 @@ bot.command("support", authHandler.supportHandler);
 bot.command("login", authHandler.loginHandler);
 bot.command("logout", authHandler.logoutHandler);
 bot.command("profile", authHandler.profileHandler);
+bot.command("kycstatus", authHandler.kycStatusHandler);
 
 bot.command("balance", walletHandler.balanceHandler);
 bot.command("wallets", walletHandler.walletsHandler);
@@ -50,6 +52,23 @@ bot.hears("📜 History", transferHandler.historyHandler);
 bot.hears("💸 Send", transferHandler.sendHandler);
 bot.hears("🏦 Withdraw", transferHandler.withdrawHandler);
 bot.hears("💳 Deposit", transferHandler.depositHandler);
+bot.hears("⚙️ Set Default Wallet", walletHandler.setDefaultWalletHandler);
+bot.hears("📜 Transactions", transferHandler.historyHandler);
+bot.hears("➕ Add Payee", transferHandler.addPayeeHandler);
+
+// Add text message handlers for keyboard buttons
+bot.hears("👤 Profile", authHandler.profileHandler);
+bot.hears("🔑 Login", authHandler.loginHandler);
+bot.hears("🔒 Logout", authHandler.logoutHandler);
+bot.hears("ℹ️ Help", helpHandler);
+bot.hears("📞 Support", authHandler.supportHandler);
+bot.hears("🔑 KYC Status", authHandler.kycStatusHandler);
+bot.hears("💰 Balance", walletHandler.balanceHandler);
+bot.hears("🪙 Wallets", walletHandler.walletsHandler);
+bot.hears("💸 Send Money", transferHandler.sendHandler);
+bot.hears("📥 Deposit", transferHandler.depositHandler);
+bot.hears("⚙️ Set Default Wallet", walletHandler.setDefaultWalletHandler);
+bot.hears("📜 Transactions", transferHandler.historyHandler);
 
 // Handle text messages
 bot.on(message("text"), async (ctx) => {
@@ -103,6 +122,20 @@ bot.on(message("text"), async (ctx) => {
     await transferHandler.handleAmountInput(ctx, ctx.message.text);
     return;
   }
+
+  // Check if we're awaiting deposit amount input
+  if (
+    replyText &&
+    ctx.session?.depositState &&
+    replyText.includes("amount you want to deposit")
+  ) {
+    await transferHandler.handleDepositAmountInput(ctx, ctx.message.text);
+    return;
+  }
+
+  // If none of the above conditions match, show the help menu for unknown commands
+  console.log("Unknown command received:", ctx.message.text);
+  await authHandler.helpHandler(ctx);
 });
 
 // Handle callback queries
@@ -252,10 +285,22 @@ bot.action(/generate:(.+)/, async (ctx) => {
   }
 });
 
-// Add handlers for deposit
-bot.action(/deposit:(.+)/, async (ctx) => {
+// Add handler for deposit network selection
+bot.action(/^deposit:(.+)$/, async (ctx) => {
   const network = ctx.match[1];
   await transferHandler.handleDepositNetworkSelection(ctx, network);
+});
+
+// Add handler for creating deposit transaction
+bot.action(/^create:deposit:(.+)$/, async (ctx) => {
+  const network = ctx.match[1];
+  await transferHandler.handleCreateDeposit(ctx, network);
+});
+
+// Add handler for viewing specific transfer
+bot.action(/^view:transfer:(.+)$/, async (ctx) => {
+  const transferId = ctx.match[1];
+  await transferHandler.viewTransferHandler(ctx, transferId);
 });
 
 // Add handler for copy address
@@ -267,8 +312,16 @@ bot.action(/copy:(.+)/, async (ctx) => {
 // Add handler for refresh deposit status
 bot.action(/refresh:deposit:(.+)/, async (ctx) => {
   const network = ctx.match[1];
-  await transferHandler.handleDepositNetworkSelection(ctx, network);
-  await ctx.answerCbQuery("Deposit information refreshed");
+  try {
+    await ctx.answerCbQuery("Creating a new deposit transaction...");
+    await transferHandler.handleCreateDeposit(ctx, network);
+  } catch (error) {
+    console.error("Error creating deposit transaction:", error);
+    await ctx.answerCbQuery("Failed to create deposit transaction");
+    await ctx.reply(
+      "❌ Failed to create deposit transaction. Please try again later."
+    );
+  }
 });
 
 // Register history pagination handlers
@@ -283,8 +336,11 @@ bot.action("login", async (ctx) => {
   await authHandler.loginHandler(ctx);
 });
 
+// Add handler for "View Balances" button
+bot.action("balance", walletHandler.balanceHandler);
+
 // Create a simple HTTP server for Render
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 const server = http.createServer((req, res) => {
   if (req.url === "/health") {
     // Health check endpoint
@@ -360,33 +416,41 @@ server.listen(PORT, () => {
       const lockTime = new Date(lockData);
       const now = new Date();
 
-      // If the lock is older than 5 minutes, it might be stale
-      if (now.getTime() - lockTime.getTime() < 5 * 60 * 1000) {
+      // If the lock is older than 1 minute, it might be stale
+      if (now.getTime() - lockTime.getTime() < 60 * 1000) {
         console.log(
           "Another bot instance appears to be running. This instance will only serve HTTP requests."
         );
         return;
       } else {
         console.log("Found a stale lock file. Overwriting it.");
+        // Force remove the stale lock file
+        try {
+          fs.unlinkSync(lockFile);
+        } catch (unlinkError) {
+          console.error("Error removing stale lock file:", unlinkError);
+        }
       }
     }
 
     // Create or update the lock file
     fs.writeFileSync(lockFile, new Date().toISOString());
 
-    // Start bot
-    bot
-      .launch()
-      .then(() => {
-        console.log("Bot started successfully!");
-      })
-      .catch((err) => {
-        console.error("Error starting bot:", err);
-        // Remove lock file on error
-        if (fs.existsSync(lockFile)) {
-          fs.unlinkSync(lockFile);
-        }
-      });
+    // Start bot with a small delay to ensure any previous instance has fully terminated
+    setTimeout(() => {
+      bot
+        .launch()
+        .then(() => {
+          console.log("Bot started successfully!");
+        })
+        .catch((err) => {
+          console.error("Error starting bot:", err);
+          // Remove lock file on error
+          if (fs.existsSync(lockFile)) {
+            fs.unlinkSync(lockFile);
+          }
+        });
+    }, 2000);
 
     // Remove lock file on exit
     const removeLock = () => {
@@ -401,11 +465,13 @@ server.listen(PORT, () => {
     process.on("SIGTERM", removeLock);
   } catch (error) {
     console.error("Error managing bot lock file:", error);
-    // Start bot anyway as fallback
-    bot
-      .launch()
-      .then(() => console.log("Bot started successfully!"))
-      .catch((err) => console.error("Error starting bot:", err));
+    // Start bot anyway as fallback with a delay
+    setTimeout(() => {
+      bot
+        .launch()
+        .then(() => console.log("Bot started successfully!"))
+        .catch((err) => console.error("Error starting bot:", err));
+    }, 3000);
   }
 });
 
