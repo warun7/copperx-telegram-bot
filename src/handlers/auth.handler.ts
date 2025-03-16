@@ -233,12 +233,27 @@ export const handleOTPInput = async (ctx: BotContext, otp: string) => {
       ]).resize()
     );
 
-    // Check KYC status from user profile
-    if (user.status !== "APPROVED") {
-      await ctx.reply(
-        "⚠️ Your KYC is not approved yet. Some features may be limited.\n\n" +
-          "Please complete your KYC on the Copperx platform."
-      );
+    // Check KYC status
+    try {
+      const kycResponse = await authService.getKYCStatus();
+      const kycs = kycResponse.data;
+
+      if (kycs && kycs.data && kycs.data.length > 0) {
+        const latestKyc = kycs.data[0];
+        if (latestKyc.status !== "APPROVED") {
+          await ctx.reply(
+            "⚠️ Your KYC is not approved yet. Some features may be limited.\n\n" +
+              "Please complete your KYC on the Copperx platform."
+          );
+        }
+      } else {
+        await ctx.reply(
+          "⚠️ You haven't submitted your KYC yet. Some features may be limited.\n\n" +
+            "Please complete your KYC on the Copperx platform."
+        );
+      }
+    } catch (error) {
+      console.error("Error checking KYC status:", error);
     }
   } catch (error: any) {
     console.error("Error authenticating with OTP:", error);
@@ -340,13 +355,23 @@ export const profileHandler = async (ctx: BotContext) => {
     const profileResponse = await authService.getUserProfile();
     const user = profileResponse.data;
 
+    // Get KYC status
+    const kycResponse = await authService.getKYCStatus();
+    const kycs = kycResponse.data;
+
+    let kycStatus = "Not submitted";
+    if (kycs && kycs.data && kycs.data.length > 0) {
+      const latestKyc = kycs.data[0];
+      kycStatus = latestKyc.status;
+    }
+
     await ctx.reply(
       "👤 *Your Profile*\n\n" +
         `*Email:* ${user.email}\n` +
         `*Name:* ${user.firstName || "N/A"} ${user.lastName || ""}\n` +
         `*Organization ID:* ${user.organizationId}\n` +
-        `*KYC Status:* ${user.status}\n\n` +
-        (user.status !== "APPROVED"
+        `*KYC Status:* ${kycStatus}\n\n` +
+        (kycStatus !== "APPROVED"
           ? "⚠️ Your KYC is not approved. Some features may be limited.\n"
           : "✅ Your KYC is approved. All features are available."),
       { parse_mode: "Markdown" }
