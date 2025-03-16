@@ -38,6 +38,23 @@ const canPerformTransfers = async (ctx: BotContext): Promise<boolean> => {
     // Set auth token
     setAuthToken(ctx.session.user.token);
 
+    // Get user profile to check KYC status
+    const profileResponse = await authService.getUserProfile();
+    const user = profileResponse.data;
+
+    // Check KYC status
+    if (user.status !== "APPROVED") {
+      await ctx.reply(
+        "❌ Your KYC is not approved. You cannot perform transfers until your KYC is approved.\n\n" +
+          "Please complete your KYC on the Copperx platform.",
+        Markup.keyboard([
+          ["💰 Balance", "📜 History"],
+          ["👤 Profile", "ℹ️ Help"],
+        ]).resize()
+      );
+      return false;
+    }
+
     // Check if user has a default wallet
     const walletResponse = await walletService.getDefaultWallet();
     if (!walletResponse.data || !walletResponse.data.walletAddress) {
@@ -60,28 +77,6 @@ const canPerformTransfers = async (ctx: BotContext): Promise<boolean> => {
     ) {
       await ctx.reply(
         "❌ Your wallet doesn't have sufficient balance to perform transfers.",
-        Markup.keyboard([
-          ["💰 Balance", "📜 History"],
-          ["👤 Profile", "ℹ️ Help"],
-        ]).resize()
-      );
-      return false;
-    }
-
-    // Check KYC status
-    const kycResponse = await authService.getKYCStatus();
-    const kyc = kycResponse.data;
-
-    let kycApproved = false;
-    if (kyc && kyc.length > 0) {
-      const latestKyc = kyc[0];
-      kycApproved = latestKyc.status === "APPROVED";
-    }
-
-    if (!kycApproved) {
-      await ctx.reply(
-        "❌ Your KYC is not approved. You cannot perform transfers until your KYC is approved.\n\n" +
-          "Please complete your KYC on the Copperx platform.",
         Markup.keyboard([
           ["💰 Balance", "📜 History"],
           ["👤 Profile", "ℹ️ Help"],

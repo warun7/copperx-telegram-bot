@@ -14,8 +14,11 @@ export interface User {
 export interface UserSession {
   userId: string;
   email: string;
+  firstName?: string;
+  lastName?: string;
   token: string;
   organizationId: string;
+  status?: string;
 }
 
 export enum KYCStatus {
